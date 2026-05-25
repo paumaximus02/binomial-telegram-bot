@@ -36,7 +36,19 @@ async def post_init(application: Application) -> None:
         logger.warning("Binomial Pricer API health check failed. Bot will still start.")
 
 
+def configure_event_loop() -> None:
+    """Ensure a running event loop exists (required on Python 3.10+ Linux/cloud)."""
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+
 def main() -> None:
+    configure_event_loop()
     token = get_bot_token()
     application = (
         Application.builder()
@@ -50,6 +62,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     main()
