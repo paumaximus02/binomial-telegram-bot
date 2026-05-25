@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 
@@ -75,16 +76,16 @@ async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     lines = [
-        f"Your Telegram user ID is `{user.id}`.",
-        f"Username: @{user.username}" if user.username else "Username: not set",
+        f"Your Telegram user ID is <code>{user.id}</code>.",
+        f"Username: @{html.escape(user.username)}" if user.username else "Username: not set",
     ]
 
     if chat and chat.type in GROUP_CHAT_TYPES:
         lines.extend(
             [
                 "",
-                f"Group chat ID is `{chat.id}`.",
-                f"Chat title: {chat.title or 'unknown'}",
+                f"Group chat ID is <code>{chat.id}</code>.",
+                f"Chat title: {html.escape(chat.title or 'unknown')}",
             ]
         )
 
@@ -109,7 +110,7 @@ async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             ]
         )
 
-    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
 async def access_gatekeeper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
