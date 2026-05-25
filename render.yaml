@@ -12,3 +12,5 @@ services:
         sync: false
       - key: API_BASE_URL
         sync: false
+      - key: ALLOWED_USER_IDS
+        sync: false

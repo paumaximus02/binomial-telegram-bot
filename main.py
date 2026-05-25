@@ -10,6 +10,7 @@ import sys
 from dotenv import load_dotenv
 from telegram.ext import Application
 
+from auth import register_access_control
 from handlers import register_handlers
 from utils import health_check
 
@@ -56,6 +57,7 @@ def main() -> None:
         .post_init(post_init)
         .build()
     )
+    register_access_control(application)
     register_handlers(application)
     logger.info("Starting binomial-telegram-bot...")
     application.run_polling(allowed_updates=["message", "callback_query"])

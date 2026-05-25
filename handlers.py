@@ -18,6 +18,7 @@ from telegram.ext import (
     filters,
 )
 
+from auth import whoami_command
 from presets import PRESETS, build_preset_params, get_preset
 from utils import (
     ApiError,
@@ -564,6 +565,7 @@ def build_edit_conversation() -> ConversationHandler:
 
 
 def register_handlers(application: Application) -> None:
+    application.add_handler(CommandHandler("whoami", whoami_command))
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(build_edit_conversation())

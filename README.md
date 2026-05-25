@@ -143,6 +143,27 @@ Or create manually: **New → Background Worker** → connect repo → set:
 - In Telegram, send `/start` to your bot
 - If nothing responds, check logs for token/API errors
 
+## Access control
+
+Restrict the bot to specific Telegram users with an allowlist.
+
+1. Find your Telegram **numeric user ID**:
+   - Message [@userinfobot](https://t.me/userinfobot) on Telegram, or
+   - Send `/whoami` to your bot (works even before you are allowlisted)
+2. Set `ALLOWED_USER_IDS` to a comma-separated list of IDs:
+
+```env
+ALLOWED_USER_IDS=123456789,987654321
+```
+
+3. Redeploy (Render → Environment → add/update `ALLOWED_USER_IDS`)
+
+If `ALLOWED_USER_IDS` is **empty or unset**, the bot stays open to everyone (useful for local dev).
+
+Unauthorized users see a short “private bot” message. All commands, presets, and callbacks are blocked except `/whoami`.
+
+**Note:** Use numeric user IDs, not usernames — usernames can change or be unset.
+
 ## Notes
 
 - Output uses Telegram MarkdownV2 with escaped special characters
