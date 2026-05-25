@@ -13,6 +13,10 @@ from telegram.ext import Application, ApplicationHandlerStop, ContextTypes, Type
 logger = logging.getLogger(__name__)
 
 GROUP_CHAT_TYPES = frozenset({"group", "supergroup"})
+PRIVATE_CHAT_TYPES = frozenset({"private"})
+
+ALLOWED_USER_IDS: frozenset[int] = frozenset()
+ALLOWED_GROUP_IDS: frozenset[int] = frozenset()
 
 
 def load_id_set(env_var: str, label: str) -> frozenset[int]:
@@ -22,7 +26,7 @@ def load_id_set(env_var: str, label: str) -> frozenset[int]:
 
     ids: set[int] = set()
     for part in raw.split(","):
-        part = part.strip()
+        part = part.strip().strip('"').strip("'")
         if not part:
             continue
         try:
@@ -34,8 +38,10 @@ def load_id_set(env_var: str, label: str) -> frozenset[int]:
     return frozenset(ids)
 
 
-ALLOWED_USER_IDS = load_id_set("ALLOWED_USER_IDS", "ALLOWED_USER_IDS")
-ALLOWED_GROUP_IDS = load_id_set("ALLOWED_GROUP_IDS", "ALLOWED_GROUP_IDS")
+def reload_allowlists() -> None:
+    global ALLOWED_USER_IDS, ALLOWED_GROUP_IDS
+    ALLOWED_USER_IDS = load_id_set("ALLOWED_USER_IDS", "ALLOWED_USER_IDS")
+    ALLOWED_GROUP_IDS = load_id_set("ALLOWED_GROUP_IDS", "ALLOWED_GROUP_IDS")
 
 
 def is_access_restricted() -> bool:
@@ -47,6 +53,23 @@ def is_group_chat(update: Update) -> bool:
     return bool(chat and chat.type in GROUP_CHAT_TYPES)
 
 
+def is_private_chat(update: Update) -> bool:
+    chat = update.effective_chat
+    return bool(chat and chat.type in PRIVATE_CHAT_TYPES)
+
+
+def is_user_allowlisted(user_id: int | None) -> bool:
+    if user_id is None or not ALLOWED_USER_IDS:
+        return False
+    return user_id in ALLOWED_USER_IDS
+
+
+def is_group_allowlisted(chat_id: int | None) -> bool:
+    if chat_id is None or not ALLOWED_GROUP_IDS:
+        return False
+    return chat_id in ALLOWED_GROUP_IDS
+
+
 def is_update_authorized(update: Update) -> bool:
     if not is_access_restricted():
         return True
@@ -54,19 +77,21 @@ def is_update_authorized(update: Update) -> bool:
     chat = update.effective_chat
     user = update.effective_user
 
-    if chat and chat.type in GROUP_CHAT_TYPES:
-        if ALLOWED_GROUP_IDS:
-            return chat.id in ALLOWED_GROUP_IDS
-        return False
+    if is_group_chat(update):
+        return is_group_allowlisted(chat.id if chat else None)
 
-    if ALLOWED_USER_IDS and user:
-        return user.id in ALLOWED_USER_IDS
-    return False
+    if is_private_chat(update):
+        return is_user_allowlisted(user.id if user else None)
+
+    return is_user_allowlisted(user.id if user else None)
 
 
 def _is_whoami(update: Update) -> bool:
     message = update.effective_message
-    return bool(message and message.text and message.text.strip().startswith("/whoami"))
+    if not message or not message.text:
+        return False
+    command = message.text.strip().split()[0].split("@")[0]
+    return command == "/whoami"
 
 
 async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -78,6 +103,8 @@ async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     lines = [
         f"Your Telegram user ID is <code>{user.id}</code>.",
         f"Username: @{html.escape(user.username)}" if user.username else "Username: not set",
+        "",
+        f"User allowlisted: {'yes' if is_user_allowlisted(user.id) else 'no'}",
     ]
 
     if chat and chat.type in GROUP_CHAT_TYPES:
@@ -86,6 +113,7 @@ async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 "",
                 f"Group chat ID is <code>{chat.id}</code>.",
                 f"Chat title: {html.escape(chat.title or 'unknown')}",
+                f"Group allowlisted: {'yes' if is_group_allowlisted(chat.id) else 'no'}",
             ]
         )
 
@@ -98,15 +126,16 @@ async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             [
                 "",
                 "This group is not on the allowlist.",
-                "Send the group chat ID above to the bot owner.",
+                "Add the group chat ID above to ALLOWED_GROUP_IDS on Render.",
             ]
         )
     else:
         lines.extend(
             [
                 "",
-                "This bot is private.",
-                "Send your user ID to the owner to request DM access.",
+                "DM access is not enabled for your user ID.",
+                "Add your user ID above to ALLOWED_USER_IDS on Render.",
+                "Group access and DM access are configured separately.",
             ]
         )
 
@@ -137,22 +166,30 @@ async def access_gatekeeper(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if is_group_chat(update):
             text = (
                 "This bot is not enabled in this group.\n\n"
-                "An admin can send /whoami here to get the group chat ID for the allowlist."
+                "Send /whoami here to get the group chat ID for ALLOWED_GROUP_IDS."
             )
         else:
             text = (
-                "This bot is private.\n\n"
-                "Send /whoami to get your Telegram user ID, then ask the owner for access."
+                "This bot is not enabled in private chat for your user ID.\n\n"
+                "Send /whoami to get your user ID, then add it to ALLOWED_USER_IDS on Render."
             )
         await update.effective_message.reply_text(text)
     raise ApplicationHandlerStop
 
 
 def register_access_control(application: Application) -> None:
+    reload_allowlists()
+
     if ALLOWED_USER_IDS:
-        logger.info("DM access enabled for %d user(s).", len(ALLOWED_USER_IDS))
+        logger.info("DM access enabled for user IDs: %s", ", ".join(str(i) for i in sorted(ALLOWED_USER_IDS)))
+    else:
+        logger.info("ALLOWED_USER_IDS is not set; private chat access is disabled when groups are restricted.")
+
     if ALLOWED_GROUP_IDS:
-        logger.info("Group access enabled for %d group(s).", len(ALLOWED_GROUP_IDS))
+        logger.info("Group access enabled for chat IDs: %s", ", ".join(str(i) for i in sorted(ALLOWED_GROUP_IDS)))
+    else:
+        logger.info("ALLOWED_GROUP_IDS is not set; group access is disabled when users are restricted.")
+
     if not is_access_restricted():
         logger.warning("No allowlists set. The bot is open to everyone.")
 

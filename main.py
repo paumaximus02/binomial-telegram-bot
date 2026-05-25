@@ -8,13 +8,14 @@ import os
 import sys
 
 from dotenv import load_dotenv
+
+load_dotenv()
+
 from telegram.ext import Application
 
 from auth import register_access_control
 from handlers import register_handlers
 from utils import health_check
-
-load_dotenv()
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
