@@ -145,24 +145,44 @@ Or create manually: **New → Background Worker** → connect repo → set:
 
 ## Access control
 
-Restrict the bot to specific Telegram users with an allowlist.
+Restrict who can use the bot with two optional allowlists:
 
-1. Find your Telegram **numeric user ID**:
-   - Message [@userinfobot](https://t.me/userinfobot) on Telegram, or
-   - Send `/whoami` to your bot (works even before you are allowlisted)
-2. Set `ALLOWED_USER_IDS` to a comma-separated list of IDs:
+| Variable | Allows |
+|----------|--------|
+| `ALLOWED_USER_IDS` | Private 1:1 chats with those users |
+| `ALLOWED_GROUP_IDS` | Named groups/supergroups (any member in those chats) |
+
+You can set one or both. If both are empty, the bot is open to everyone.
+
+### Allow DMs from yourself
+
+1. Get your user ID from [@userinfobot](https://t.me/userinfobot) or `/whoami`
+2. Set `ALLOWED_USER_IDS=123456789`
+
+### Allow a Telegram group
+
+1. Add the bot to your group
+2. In BotFather, send `/setprivacy` → choose your bot → **Disable** (so the bot sees normal messages if needed later)
+3. In the group, send `/whoami@YourBotName_bot`
+4. Copy the **Group chat ID** (a negative number like `-1001234567890`)
+5. Set on Render:
 
 ```env
-ALLOWED_USER_IDS=123456789,987654321
+ALLOWED_GROUP_IDS=-1001234567890
 ```
 
-3. Redeploy (Render → Environment → add/update `ALLOWED_USER_IDS`)
+6. Redeploy
 
-If `ALLOWED_USER_IDS` is **empty or unset**, the bot stays open to everyone (useful for local dev).
+Example — DMs for you, plus one group:
 
-Unauthorized users see a short “private bot” message. All commands, presets, and callbacks are blocked except `/whoami`.
+```env
+ALLOWED_USER_IDS=123456789
+ALLOWED_GROUP_IDS=-1001234567890
+```
 
-**Note:** Use numeric user IDs, not usernames — usernames can change or be unset.
+Unauthorized users/groups see a short message. `/whoami` always works so people can request access.
+
+**Note:** Use numeric IDs, not usernames. Group IDs are usually negative and start with `-100` for supergroups.
 
 ## Notes
 

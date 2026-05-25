@@ -14,3 +14,5 @@ services:
         sync: false
       - key: ALLOWED_USER_IDS
         sync: false
+      - key: ALLOWED_GROUP_IDS
+        sync: false
