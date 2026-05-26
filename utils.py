@@ -324,19 +324,122 @@ def parse_option_type(text: str) -> str:
     raise ValueError("Option type must be `call` or `put`.")
 
 
-def store_price_params(context, params: PriceParams) -> None:
-    context.user_data["price_params"] = params
+PRICE_SESSIONS_KEY = "price_sessions"
+EDIT_TARGET_KEY = "edit_target"
+DRAFT_PRICES_KEY = "draft_prices"
+DRAFT_IVS_KEY = "draft_ivs"
+EDIT_FIELDS_KEY = "edit_fields"
 
 
-def load_price_params(context) -> PriceParams | None:
-    params = context.user_data.get("price_params")
+def session_key(chat_id: int, message_id: int) -> str:
+    return f"{chat_id}:{message_id}"
+
+
+def _price_sessions(context) -> dict[str, PriceParams]:
+    return context.user_data.setdefault(PRICE_SESSIONS_KEY, {})
+
+
+def store_price_session(
+    context,
+    chat_id: int,
+    message_id: int,
+    params: PriceParams,
+) -> None:
+    _price_sessions(context)[session_key(chat_id, message_id)] = params.copy()
+
+
+def load_price_session(context, chat_id: int, message_id: int) -> PriceParams | None:
+    params = _price_sessions(context).get(session_key(chat_id, message_id))
     return params.copy() if isinstance(params, PriceParams) else None
 
 
-def store_iv_params(context, params: IVParams) -> None:
-    context.user_data["iv_params"] = params
+def store_edit_target(context, chat_id: int, message_id: int) -> None:
+    context.user_data[EDIT_TARGET_KEY] = (chat_id, message_id)
 
 
-def load_iv_params(context) -> IVParams | None:
-    params = context.user_data.get("iv_params")
+def load_edit_target(context) -> tuple[int, int] | None:
+    target = context.user_data.get(EDIT_TARGET_KEY)
+    if isinstance(target, tuple) and len(target) == 2:
+        return int(target[0]), int(target[1])
+    return None
+
+
+def clear_edit_target(context) -> None:
+    context.user_data.pop(EDIT_TARGET_KEY, None)
+
+
+def load_edit_session(context) -> PriceParams | None:
+    target = load_edit_target(context)
+    if target is None:
+        return None
+    chat_id, message_id = target
+    return load_price_session(context, chat_id, message_id)
+
+
+def store_edit_session(context, params: PriceParams) -> None:
+    target = load_edit_target(context)
+    if target is None:
+        return
+    chat_id, message_id = target
+    store_price_session(context, chat_id, message_id, params)
+
+
+def store_draft_price(context, chat_id: int, params: PriceParams) -> None:
+    context.user_data.setdefault(DRAFT_PRICES_KEY, {})[chat_id] = params
+
+
+def load_draft_price(context, chat_id: int) -> PriceParams | None:
+    draft = context.user_data.get(DRAFT_PRICES_KEY, {}).get(chat_id)
+    return draft if isinstance(draft, PriceParams) else None
+
+
+def pop_draft_price(context, chat_id: int) -> PriceParams | None:
+    drafts = context.user_data.setdefault(DRAFT_PRICES_KEY, {})
+    draft = drafts.pop(chat_id, None)
+    return draft if isinstance(draft, PriceParams) else None
+
+
+def store_draft_iv(context, chat_id: int, params: IVParams) -> None:
+    context.user_data.setdefault(DRAFT_IVS_KEY, {})[chat_id] = params
+
+
+def load_draft_iv(context, chat_id: int) -> IVParams | None:
+    draft = context.user_data.get(DRAFT_IVS_KEY, {}).get(chat_id)
+    return draft if isinstance(draft, IVParams) else None
+
+
+def pop_draft_iv(context, chat_id: int) -> IVParams | None:
+    drafts = context.user_data.setdefault(DRAFT_IVS_KEY, {})
+    draft = drafts.pop(chat_id, None)
+    return draft if isinstance(draft, IVParams) else None
+
+
+def store_edit_field(context, chat_id: int, field: str) -> None:
+    context.user_data.setdefault(EDIT_FIELDS_KEY, {})[chat_id] = field
+
+
+def pop_edit_field(context, chat_id: int) -> str | None:
+    fields = context.user_data.setdefault(EDIT_FIELDS_KEY, {})
+    return fields.pop(chat_id, None)
+
+
+def get_edit_field(context, chat_id: int) -> str | None:
+    return context.user_data.get(EDIT_FIELDS_KEY, {}).get(chat_id)
+
+
+def clear_chat_flow_state(context, chat_id: int) -> None:
+    context.user_data.setdefault(DRAFT_PRICES_KEY, {}).pop(chat_id, None)
+    context.user_data.setdefault(DRAFT_IVS_KEY, {}).pop(chat_id, None)
+    context.user_data.setdefault(EDIT_FIELDS_KEY, {}).pop(chat_id, None)
+    target = load_edit_target(context)
+    if target and target[0] == chat_id:
+        clear_edit_target(context)
+
+
+def store_iv_params(context, chat_id: int, params: IVParams) -> None:
+    context.user_data.setdefault("iv_sessions", {})[chat_id] = params
+
+
+def load_iv_params(context, chat_id: int) -> IVParams | None:
+    params = context.user_data.get("iv_sessions", {}).get(chat_id)
     return params if isinstance(params, IVParams) else None

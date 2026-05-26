@@ -6,7 +6,7 @@ import logging
 from datetime import date
 
 import httpx
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -24,19 +24,32 @@ from utils import (
     ApiError,
     IVParams,
     PriceParams,
+    clear_chat_flow_state,
+    clear_edit_target,
     escape_md,
     format_iv_result,
     format_price_result,
-    load_price_params,
+    load_draft_iv,
+    load_draft_price,
+    load_edit_session,
+    load_price_session,
     parse_days_or_date,
     parse_option_type,
     parse_positive_float,
     parse_rate,
     parse_volatility,
+    pop_draft_iv,
+    pop_draft_price,
+    pop_edit_field,
     price_option,
     solve_iv,
+    store_draft_iv,
+    store_draft_price,
+    store_edit_field,
+    store_edit_session,
+    store_edit_target,
     store_iv_params,
-    store_price_params,
+    store_price_session,
     strip_prefix,
 )
 
@@ -130,10 +143,16 @@ def option_type_keyboard(prefix: str) -> InlineKeyboardMarkup:
     )
 
 
-async def _reply(update: Update, text: str, **kwargs) -> None:
+async def _reply(update: Update, text: str, **kwargs) -> Message | None:
     message = update.effective_message
     if message:
-        await message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2, **kwargs)
+        return await message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2, **kwargs)
+    return None
+
+
+def _chat_id(update: Update) -> int | None:
+    chat = update.effective_chat
+    return chat.id if chat else None
 
 
 async def _send_api_error(update: Update, exc: ApiError) -> None:
@@ -169,10 +188,17 @@ async def send_price_result(
     params.strike = float(data["strike"])
     params.rate = float(data["rate"])
     params.vol = float(data["vol"])
-    store_price_params(context, params)
 
     text = format_price_result(data, label or params.preset_label)
-    await _reply(update, text, reply_markup=edit_menu_keyboard())
+    chat_id = _chat_id(update)
+    if chat_id is None:
+        return False
+
+    sent = await _reply(update, text, reply_markup=edit_menu_keyboard())
+    if sent is None:
+        return False
+
+    store_price_session(context, chat_id, sent.message_id, params)
     return True
 
 
@@ -185,9 +211,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.pop("draft_price", None)
-    context.user_data.pop("draft_iv", None)
-    context.user_data.pop("edit_field", None)
+    chat_id = _chat_id(update)
+    if chat_id is not None:
+        clear_chat_flow_state(context, chat_id)
     await _reply(update, "Cancelled\\. Send /start or /price to begin again\\.")
     return ConversationHandler.END
 
@@ -206,7 +232,8 @@ async def preset_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "Enter the *stock symbol* \\(e\\.g\\. AAPL\\)\\:",
             parse_mode=ParseMode.MARKDOWN_V2,
         )
-        context.user_data["draft_price"] = PriceParams(valuation_date=date.today())
+        chat_id = query.message.chat_id
+        store_draft_price(context, chat_id, PriceParams(valuation_date=date.today()))
         return PRICE_SYMBOL
 
     preset = get_preset(preset_id)
@@ -233,7 +260,10 @@ async def preset_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["draft_price"] = PriceParams(valuation_date=date.today())
+    chat_id = _chat_id(update)
+    if chat_id is None:
+        return ConversationHandler.END
+    store_draft_price(context, chat_id, PriceParams(valuation_date=date.today()))
     await _reply(
         update,
         "Custom pricing started\\.\n\nEnter the *stock symbol* \\(e\\.g\\. AAPL\\)\\:",
@@ -242,12 +272,20 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def price_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    chat_id = _chat_id(update)
+    if chat_id is None:
+        return ConversationHandler.END
+
     symbol = (update.message.text or "").strip().upper()
     if not symbol.isalpha() or len(symbol) > 10:
         await _reply(update, "Please enter a valid ticker symbol \\(e\\.g\\. AMZN\\)\\.")
         return PRICE_SYMBOL
 
-    draft: PriceParams = context.user_data["draft_price"]
+    draft = load_draft_price(context, chat_id)
+    if draft is None:
+        await _reply(update, "Session expired\\. Send /price to start again\\.")
+        return ConversationHandler.END
+
     draft.symbol = symbol
     await _reply(
         update,
@@ -258,7 +296,15 @@ async def price_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 
 async def price_strike(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    draft: PriceParams = context.user_data["draft_price"]
+    chat_id = _chat_id(update)
+    if chat_id is None:
+        return ConversationHandler.END
+
+    draft = load_draft_price(context, chat_id)
+    if draft is None:
+        await _reply(update, "Session expired\\. Send /price to start again\\.")
+        return ConversationHandler.END
+
     try:
         draft.strike = parse_positive_float(update.message.text or "", "Strike")
     except ValueError as exc:
@@ -273,7 +319,15 @@ async def price_strike(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 
 async def price_vol(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    draft: PriceParams = context.user_data["draft_price"]
+    chat_id = _chat_id(update)
+    if chat_id is None:
+        return ConversationHandler.END
+
+    draft = load_draft_price(context, chat_id)
+    if draft is None:
+        await _reply(update, "Session expired\\. Send /price to start again\\.")
+        return ConversationHandler.END
+
     try:
         draft.vol = parse_volatility(update.message.text or "")
     except ValueError as exc:
@@ -288,7 +342,15 @@ async def price_vol(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def price_expiry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    draft: PriceParams = context.user_data["draft_price"]
+    chat_id = _chat_id(update)
+    if chat_id is None:
+        return ConversationHandler.END
+
+    draft = load_draft_price(context, chat_id)
+    if draft is None:
+        await _reply(update, "Session expired\\. Send /price to start again\\.")
+        return ConversationHandler.END
+
     try:
         draft.expiry = parse_days_or_date(update.message.text or "", draft.valuation_date)
     except ValueError as exc:
@@ -309,8 +371,13 @@ async def price_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
         return ConversationHandler.END
 
     await query.answer()
+    chat_id = query.message.chat_id
     option_type = strip_prefix(query.data, "price_type:")
-    draft: PriceParams = context.user_data.pop("draft_price")
+    draft = pop_draft_price(context, chat_id)
+    if draft is None:
+        await query.message.reply_text("Session expired\\. Send /price to start again\\.")
+        return ConversationHandler.END
+
     draft.option_type = option_type
     draft.preset_label = "Custom Option"
 
@@ -323,7 +390,10 @@ async def price_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def iv_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["draft_iv"] = IVParams(valuation_date=date.today())
+    chat_id = _chat_id(update)
+    if chat_id is None:
+        return ConversationHandler.END
+    store_draft_iv(context, chat_id, IVParams(valuation_date=date.today()))
     await _reply(
         update,
         "Implied volatility flow started\\.\n\n"
@@ -333,7 +403,15 @@ async def iv_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def iv_market_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    draft: IVParams = context.user_data["draft_iv"]
+    chat_id = _chat_id(update)
+    if chat_id is None:
+        return ConversationHandler.END
+
+    draft = load_draft_iv(context, chat_id)
+    if draft is None:
+        await _reply(update, "Session expired\\. Send /iv to start again\\.")
+        return ConversationHandler.END
+
     try:
         draft.market_price = parse_positive_float(update.message.text or "", "Market price")
     except ValueError as exc:
@@ -345,19 +423,35 @@ async def iv_market_price(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def iv_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    chat_id = _chat_id(update)
+    if chat_id is None:
+        return ConversationHandler.END
+
     symbol = (update.message.text or "").strip().upper()
     if not symbol.isalpha() or len(symbol) > 10:
         await _reply(update, "Please enter a valid ticker symbol\\.")
         return IV_SYMBOL
 
-    draft: IVParams = context.user_data["draft_iv"]
+    draft = load_draft_iv(context, chat_id)
+    if draft is None:
+        await _reply(update, "Session expired\\. Send /iv to start again\\.")
+        return ConversationHandler.END
+
     draft.symbol = symbol
     await _reply(update, "Enter the *strike price*\\:")
     return IV_STRIKE
 
 
 async def iv_strike(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    draft: IVParams = context.user_data["draft_iv"]
+    chat_id = _chat_id(update)
+    if chat_id is None:
+        return ConversationHandler.END
+
+    draft = load_draft_iv(context, chat_id)
+    if draft is None:
+        await _reply(update, "Session expired\\. Send /iv to start again\\.")
+        return ConversationHandler.END
+
     try:
         draft.strike = parse_positive_float(update.message.text or "", "Strike")
     except ValueError as exc:
@@ -372,7 +466,15 @@ async def iv_strike(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def iv_expiry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    draft: IVParams = context.user_data["draft_iv"]
+    chat_id = _chat_id(update)
+    if chat_id is None:
+        return ConversationHandler.END
+
+    draft = load_draft_iv(context, chat_id)
+    if draft is None:
+        await _reply(update, "Session expired\\. Send /iv to start again\\.")
+        return ConversationHandler.END
+
     try:
         draft.expiry = parse_days_or_date(update.message.text or "", draft.valuation_date)
     except ValueError as exc:
@@ -393,7 +495,12 @@ async def iv_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return ConversationHandler.END
 
     await query.answer()
-    draft: IVParams = context.user_data.pop("draft_iv")
+    chat_id = query.message.chat_id
+    draft = pop_draft_iv(context, chat_id)
+    if draft is None:
+        await query.message.reply_text("Session expired\\. Send /iv to start again\\.")
+        return ConversationHandler.END
+
     draft.option_type = strip_prefix(query.data, "iv_type:")
 
     try:
@@ -405,24 +512,28 @@ async def iv_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await _send_network_error(update)
         return ConversationHandler.END
 
-    store_iv_params(context, draft)
+    store_iv_params(context, chat_id, draft)
     await _reply(update, format_iv_result(data))
     return ConversationHandler.END
 
 
 async def edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    if not query:
+    if not query or not query.message:
         return ConversationHandler.END
 
     await query.answer()
-    if load_price_params(context) is None:
+    chat_id = query.message.chat_id
+    message_id = query.message.message_id
+    params = load_price_session(context, chat_id, message_id)
+    if params is None:
         await query.message.reply_text(
-            "No active pricing session\\. Run /start or /price first\\.",
+            "This result is no longer editable\\. Run /start or /price again\\.",
             parse_mode=ParseMode.MARKDOWN_V2,
         )
         return ConversationHandler.END
 
+    store_edit_target(context, chat_id, message_id)
     await query.message.reply_text(
         "Which parameter would you like to change?",
         reply_markup=edit_param_keyboard(),
@@ -439,6 +550,7 @@ async def edit_select_param(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     action = strip_prefix(query.data, "edit:")
 
     if action == "done":
+        clear_edit_target(context)
         await query.message.reply_text(
             "All set\\. Tap /start for presets or /price for a new custom run\\.",
             parse_mode=ParseMode.MARKDOWN_V2,
@@ -461,7 +573,15 @@ async def edit_select_param(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if action not in prompts:
         return ConversationHandler.END
 
-    context.user_data["edit_field"] = action
+    chat_id = query.message.chat_id
+    if load_edit_session(context) is None:
+        await query.message.reply_text(
+            "This result is no longer editable\\. Run /start or /price again\\.",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+        return ConversationHandler.END
+
+    store_edit_field(context, chat_id, action)
     await query.message.reply_text(prompts[action], parse_mode=ParseMode.MARKDOWN_V2)
     return EDIT_VALUE
 
@@ -472,22 +592,30 @@ async def edit_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
 
     await query.answer()
-    params = load_price_params(context)
+    params = load_edit_session(context)
     if params is None:
-        await query.message.reply_text("No active pricing session\\.", parse_mode=ParseMode.MARKDOWN_V2)
+        await query.message.reply_text(
+            "This result is no longer editable\\. Run /start or /price again\\.",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
         return ConversationHandler.END
 
     params.option_type = strip_prefix(query.data, "edit_type:")
-    store_price_params(context, params)
+    store_edit_session(context, params)
 
     await query.message.reply_text("Recalculating\\.\\.\\.", parse_mode=ParseMode.MARKDOWN_V2)
     await send_price_result(update, context, params)
+    clear_edit_target(context)
     return ConversationHandler.END
 
 
 async def edit_receive_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    params = load_price_params(context)
-    field = context.user_data.pop("edit_field", None)
+    chat_id = _chat_id(update)
+    if chat_id is None:
+        return ConversationHandler.END
+
+    params = load_edit_session(context)
+    field = pop_edit_field(context, chat_id)
     if params is None or field is None:
         await _reply(update, "Edit session expired\\. Use /start or /price again\\.")
         return ConversationHandler.END
@@ -507,12 +635,13 @@ async def edit_receive_value(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return ConversationHandler.END
     except ValueError as exc:
         await _reply(update, escape_md(str(exc)))
-        context.user_data["edit_field"] = field
+        store_edit_field(context, chat_id, field)
         return EDIT_VALUE
 
-    store_price_params(context, params)
+    store_edit_session(context, params)
     await _reply(update, "Recalculating\\.\\.\\.")
     await send_price_result(update, context, params)
+    clear_edit_target(context)
     return ConversationHandler.END
 
 
